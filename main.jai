@@ -48,8 +48,8 @@ Game_State :: struct {
     bowl_dots:      [MAX_BOWL_DOTS] Bowl_Dot;
     bowl_dot_count: int;
 
-    hand_has_dot:   bool;
-    hand_dot_color: Vector4;
+    hand_dots:      [MAX_POOL_DOTS] Vector4;
+    hand_dot_count: int;
 
     pool_dots:      [MAX_POOL_DOTS] bool;  // true = still available
     pool_dot_count: int;
@@ -173,7 +173,7 @@ get_subitize_offset :: (count: int, index: int) -> Vector2 {
 init_game :: () {
     game.goal_number = 3;
     game.bowl_dot_count = 0;
-    game.hand_has_dot = false;
+    game.hand_dot_count = 0;
     game.pool_dot_count = MAX_POOL_DOTS;
 
     for i: 0..MAX_BOWL_DOTS-1 {
@@ -197,7 +197,7 @@ new_round :: () {
     }
     game.goal_number = new_goal;
     game.bowl_dot_count = 0;
-    game.hand_has_dot = false;
+    game.hand_dot_count = 0;
     game.pool_dot_count = MAX_POOL_DOTS;
 
     for i: 0..MAX_BOWL_DOTS-1 {
@@ -236,60 +236,60 @@ handle_click :: (mx: float, my: float) {
     bowl_center := get_bowl_center();
     bowl_r := get_bowl_radius();
 
-    // If hand is empty, try picking up from pool
-    if !game.hand_has_dot {
+    // Always try picking up from pool (add to hand)
+    {
         pool_positions := get_pool_dot_positions();
         for i: 0..MAX_POOL_DOTS-1 {
             if !game.pool_dots[i] continue;
             dx := mx - pool_positions[i].x;
             dy := my - pool_positions[i].y;
             dist := sqrt(dx*dx + dy*dy);
-            if dist < dot_r * 2.0 {
+            if dist < dot_r * 2.0 && game.hand_dot_count < MAX_POOL_DOTS {
                 game.pool_dots[i] = false;
                 game.pool_dot_count -= 1;
-                game.hand_has_dot = true;
-                game.hand_dot_color = DOT_COLORS[i];
+                game.hand_dots[game.hand_dot_count] = DOT_COLORS[i];
+                game.hand_dot_count += 1;
                 return;
             }
         }
+    }
 
-        // Try picking up from bowl (remove last dot)
-        dx := mx - bowl_center.x;
-        dy := my - bowl_center.y;
-        dist := sqrt(dx*dx + dy*dy);
-        if dist < bowl_r && game.bowl_dot_count > 0 {
-            // Remove the last placed dot
+    // Click on bowl
+    dx := mx - bowl_center.x;
+    dy := my - bowl_center.y;
+    dist := sqrt(dx*dx + dy*dy);
+    if dist < bowl_r {
+        if game.hand_dot_count > 0 {
+            // Place all hand dots into bowl
+            for i: 0..game.hand_dot_count-1 {
+                if game.bowl_dot_count >= MAX_BOWL_DOTS break;
+                // Find next free bowl slot
+                for j: 0..MAX_BOWL_DOTS-1 {
+                    if !game.bowl_dots[j].active {
+                        game.bowl_dots[j].active = true;
+                        game.bowl_dots[j].color = game.hand_dots[i];
+                        game.bowl_dot_count += 1;
+                        break;
+                    }
+                }
+            }
+            game.hand_dot_count = 0;
+            // Check success
+            if game.bowl_dot_count == game.goal_number {
+                just_succeeded = true;
+                success_glow_timer = 2.5;
+                spawn_success_particles();
+            }
+        } else if game.bowl_dot_count > 0 {
+            // Hand empty — pick up last dot from bowl
             for #v2 < i: MAX_BOWL_DOTS-1..0 {
                 if game.bowl_dots[i].active {
-                    game.hand_has_dot = true;
-                    game.hand_dot_color = game.bowl_dots[i].color;
+                    game.hand_dots[0] = game.bowl_dots[i].color;
+                    game.hand_dot_count = 1;
                     game.bowl_dots[i].active = false;
                     game.bowl_dot_count -= 1;
                     just_succeeded = false;
                     success_glow_timer = 0;
-                    return;
-                }
-            }
-        }
-    } else {
-        // Hand has dot — try placing in bowl
-        dx := mx - bowl_center.x;
-        dy := my - bowl_center.y;
-        dist := sqrt(dx*dx + dy*dy);
-        if dist < bowl_r && game.bowl_dot_count < MAX_BOWL_DOTS {
-            // Place dot
-            for i: 0..MAX_BOWL_DOTS-1 {
-                if !game.bowl_dots[i].active {
-                    game.bowl_dots[i].active = true;
-                    game.bowl_dots[i].color = game.hand_dot_color;
-                    game.bowl_dot_count += 1;
-                    game.hand_has_dot = false;
-                    // Check success
-                    if game.bowl_dot_count == game.goal_number {
-                        just_succeeded = true;
-                        success_glow_timer = 2.5;
-                        spawn_success_particles();
-                    }
                     return;
                 }
             }
@@ -392,8 +392,17 @@ draw_frame :: () {
         fmx := cast(float) mx;
         fmy := cast(float) my;
 
-        if game.hand_has_dot {
-            draw_filled_circle(fmx, fmy, dot_r, game.hand_dot_color);
+        if game.hand_dot_count == 1 {
+            draw_filled_circle(fmx, fmy, dot_r, game.hand_dots[0]);
+        } else if game.hand_dot_count > 1 {
+            // Fan dots around cursor
+            for i: 0..game.hand_dot_count-1 {
+                angle := TAU * cast(float) i / cast(float) game.hand_dot_count - TAU * 0.25;
+                fan_r := dot_r * 1.2;
+                dx := cos(angle) * fan_r;
+                dy := sin(angle) * fan_r;
+                draw_filled_circle(fmx + dx, fmy + dy, dot_r * 0.8, game.hand_dots[i]);
+            }
         }
         draw_circle_outline(fmx, fmy, hand_r, thickness * 0.7, COLOR_OUTLINE);
     }
