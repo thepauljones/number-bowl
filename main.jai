@@ -25,13 +25,11 @@ DOT_COLORS :: Vector4.[
     #run hex_color(0xD4, 0x79, 0x6A),  // coral
 ];
 
-// ─── Subitizing layouts (normalized offsets for 1–5 dots in bowl) ──────────
+// ─── Physics Constants ────────────────────────────────────────────────────
 
-SUBITIZE_1 :: Vector2.[ .{0, 0} ];
-SUBITIZE_2 :: Vector2.[ .{-0.32, 0}, .{0.32, 0} ];
-SUBITIZE_3 :: Vector2.[ .{0, 0.30}, .{-0.30, -0.18}, .{0.30, -0.18} ];
-SUBITIZE_4 :: Vector2.[ .{-0.28, 0.28}, .{0.28, 0.28}, .{-0.28, -0.28}, .{0.28, -0.28} ];
-SUBITIZE_5 :: Vector2.[ .{-0.28, 0.28}, .{0.28, 0.28}, .{-0.28, -0.28}, .{0.28, -0.28}, .{0, 0} ];
+GRAVITY     :: 800.0;  // pixels/s² downward
+DAMPING     :: 0.98;   // velocity multiplier per step
+RESTITUTION :: 0.4;    // bounciness on collision
 
 // ─── Game State ────────────────────────────────────────────────────────────
 
@@ -41,6 +39,8 @@ MAX_POOL_DOTS :: 6;
 Bowl_Dot :: struct {
     active: bool;
     color:  Vector4;
+    pos:    Vector2;
+    vel:    Vector2;
 }
 
 Game_State :: struct {
@@ -157,17 +157,6 @@ get_pool_dot_positions :: () -> [MAX_POOL_DOTS] Vector2 {
     return result;
 }
 
-get_subitize_offset :: (count: int, index: int) -> Vector2 {
-    if count == {
-        case 1; return SUBITIZE_1[index];
-        case 2; return SUBITIZE_2[index];
-        case 3; return SUBITIZE_3[index];
-        case 4; return SUBITIZE_4[index];
-        case 5; return SUBITIZE_5[index];
-    }
-    return .{0, 0};
-}
-
 // ─── Game Logic ────────────────────────────────────────────────────────────
 
 init_game :: () {
@@ -261,6 +250,8 @@ handle_click :: (mx: float, my: float) {
     if dist < bowl_r {
         if game.hand_dot_count > 0 {
             // Place all hand dots into bowl
+            bowl_spawn_center := get_bowl_center();
+            bowl_spawn_r := get_bowl_radius();
             for i: 0..game.hand_dot_count-1 {
                 if game.bowl_dot_count >= MAX_BOWL_DOTS break;
                 // Find next free bowl slot
@@ -268,6 +259,13 @@ handle_click :: (mx: float, my: float) {
                     if !game.bowl_dots[j].active {
                         game.bowl_dots[j].active = true;
                         game.bowl_dots[j].color = game.hand_dots[i];
+                        // Spread dots across the top of the bowl
+                        spread := get_dot_radius() * 2.5;
+                        center_offset := cast(float)(game.hand_dot_count - 1) * 0.5;
+                        offset := (cast(float) i - center_offset) * spread;
+                        game.bowl_dots[j].pos.x = bowl_spawn_center.x + offset;
+                        game.bowl_dots[j].pos.y = bowl_spawn_center.y + bowl_spawn_r * 0.6;
+                        game.bowl_dots[j].vel = .{0, 0};
                         game.bowl_dot_count += 1;
                         break;
                     }
@@ -281,17 +279,27 @@ handle_click :: (mx: float, my: float) {
                 spawn_success_particles();
             }
         } else if game.bowl_dot_count > 0 {
-            // Hand empty — pick up last dot from bowl
-            for #v2 < i: MAX_BOWL_DOTS-1..0 {
-                if game.bowl_dots[i].active {
-                    game.hand_dots[0] = game.bowl_dots[i].color;
-                    game.hand_dot_count = 1;
-                    game.bowl_dots[i].active = false;
-                    game.bowl_dot_count -= 1;
-                    just_succeeded = false;
-                    success_glow_timer = 0;
-                    return;
+            // Hand empty — pick up closest dot to click
+            best_i := -1;
+            best_dist := 999999.0;
+            for i: 0..MAX_BOWL_DOTS-1 {
+                if !game.bowl_dots[i].active continue;
+                cdx := mx - game.bowl_dots[i].pos.x;
+                cdy := my - game.bowl_dots[i].pos.y;
+                d := sqrt(cdx*cdx + cdy*cdy);
+                if d < best_dist {
+                    best_dist = d;
+                    best_i = i;
                 }
+            }
+            if best_i >= 0 {
+                game.hand_dots[0] = game.bowl_dots[best_i].color;
+                game.hand_dot_count = 1;
+                game.bowl_dots[best_i].active = false;
+                game.bowl_dot_count -= 1;
+                just_succeeded = false;
+                success_glow_timer = 0;
+                return;
             }
         }
     }
@@ -314,6 +322,79 @@ update_particles :: () {
             particle_count -= 1;
         } else {
             i += 1;
+        }
+    }
+}
+
+update_bowl_physics :: () {
+    bowl_center := get_bowl_center();
+    bowl_r := get_bowl_radius();
+    dot_r := get_dot_radius();
+
+    for i: 0..MAX_BOWL_DOTS-1 {
+        if !game.bowl_dots[i].active continue;
+        d := *game.bowl_dots[i];
+
+        // Gravity (y-up coordinate system)
+        d.vel.y -= GRAVITY * dt;
+
+        // Move
+        d.pos.x += d.vel.x * dt;
+        d.pos.y += d.vel.y * dt;
+
+        // Bowl boundary collision
+        dx := d.pos.x - bowl_center.x;
+        dy := d.pos.y - bowl_center.y;
+        dist := sqrt(dx*dx + dy*dy);
+        if dist + dot_r > bowl_r {
+            // Normal pointing from center to dot
+            nx := dx / dist;
+            ny := dy / dist;
+            // Clamp position to inside bowl
+            d.pos.x = bowl_center.x + nx * (bowl_r - dot_r);
+            d.pos.y = bowl_center.y + ny * (bowl_r - dot_r);
+            // Reflect velocity along normal
+            vn := d.vel.x * nx + d.vel.y * ny;
+            if vn > 0 {
+                d.vel.x -= (1.0 + RESTITUTION) * vn * nx;
+                d.vel.y -= (1.0 + RESTITUTION) * vn * ny;
+            }
+        }
+
+        // Damping
+        d.vel.x *= DAMPING;
+        d.vel.y *= DAMPING;
+    }
+
+    // Dot-dot collisions
+    dot_diameter := dot_r * 2.0;
+    for i: 0..MAX_BOWL_DOTS-1 {
+        if !game.bowl_dots[i].active continue;
+        for j: i+1..MAX_BOWL_DOTS-1 {
+            if !game.bowl_dots[j].active continue;
+            a := *game.bowl_dots[i];
+            b := *game.bowl_dots[j];
+            dx := b.pos.x - a.pos.x;
+            dy := b.pos.y - a.pos.y;
+            dist := sqrt(dx*dx + dy*dy);
+            if dist < dot_diameter && dist > 0.001 {
+                // Push apart
+                overlap := (dot_diameter - dist) * 0.5;
+                nx := dx / dist;
+                ny := dy / dist;
+                a.pos.x -= nx * overlap;
+                a.pos.y -= ny * overlap;
+                b.pos.x += nx * overlap;
+                b.pos.y += ny * overlap;
+
+                // Exchange velocity along collision normal
+                avn := a.vel.x * nx + a.vel.y * ny;
+                bvn := b.vel.x * nx + b.vel.y * ny;
+                a.vel.x += (bvn - avn) * RESTITUTION * nx;
+                a.vel.y += (bvn - avn) * RESTITUTION * ny;
+                b.vel.x += (avn - bvn) * RESTITUTION * nx;
+                b.vel.y += (avn - bvn) * RESTITUTION * ny;
+            }
         }
     }
 }
@@ -341,17 +422,10 @@ draw_frame :: () {
     thickness := cast(float) window_height * 0.005;
     draw_circle_outline(bowl_center.x, bowl_center.y, bowl_r, thickness, outline_color);
 
-    // Draw dots inside bowl at subitizing positions
-    if game.bowl_dot_count > 0 {
-        dot_index := 0;
-        for i: 0..MAX_BOWL_DOTS-1 {
-            if !game.bowl_dots[i].active continue;
-            offset := get_subitize_offset(game.bowl_dot_count, dot_index);
-            px := bowl_center.x + offset.x * bowl_r;
-            py := bowl_center.y + offset.y * bowl_r;
-            draw_filled_circle(px, py, dot_r, game.bowl_dots[i].color);
-            dot_index += 1;
-        }
+    // Draw dots inside bowl at physics positions
+    for i: 0..MAX_BOWL_DOTS-1 {
+        if !game.bowl_dots[i].active continue;
+        draw_filled_circle(game.bowl_dots[i].pos.x, game.bowl_dots[i].pos.y, dot_r, game.bowl_dots[i].color);
     }
 
     // Draw goal number at top
@@ -500,6 +574,7 @@ main :: () {
             }
         }
 
+        update_bowl_physics();
         update_particles();
         draw_frame();
 
