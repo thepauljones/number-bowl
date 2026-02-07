@@ -29,7 +29,7 @@ DOT_COLORS :: Vector4.[
 
 GRAVITY     :: 800.0;  // pixels/s² downward
 DAMPING     :: 0.98;   // velocity multiplier per step
-RESTITUTION :: 0.4;    // bounciness on collision
+RESTITUTION :: 0.65;   // bounciness on collision
 
 // ─── Game State ────────────────────────────────────────────────────────────
 
